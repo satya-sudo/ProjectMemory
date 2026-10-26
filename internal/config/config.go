@@ -5,11 +5,28 @@ import (
 	"net"
 	"os"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct{ Addr, DatabaseURL string }
 
-func Load() (Config, error) { return load(os.Getenv) }
+func Load() (Config, error) {
+	if err := LoadEnv(".env"); err != nil {
+		return Config{}, err
+	}
+	return load(os.Getenv)
+}
+
+// LoadEnv fills missing process environment variables without overriding existing
+// values, including explicitly empty ones. Never expose parser errors: they can
+// contain credentials from the file.
+func LoadEnv(path string) error {
+	if err := godotenv.Load(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.New("cannot read or parse .env file")
+	}
+	return nil
+}
 
 func load(getenv func(string) string) (Config, error) {
 	c := Config{Addr: getenv("PROJECTMAP_ADDR"), DatabaseURL: getenv("PROJECTMAP_DATABASE_URL")}

@@ -10,9 +10,6 @@ Requirements: Go 1.25 or newer and Docker with Compose, with its engine running.
 
 ```sh
 cp .env.example .env
-set -a
-source .env
-set +a
 make db-up
 make migrate
 make bootstrap
@@ -21,7 +18,9 @@ make run
 
 PostgreSQL listens only on `127.0.0.1:15432`; the backend defaults to `127.0.0.1:8080`. The Compose database/user are `projectmap`; the sample password is a local development default. If changing it before first initialization, set `PROJECTMAP_POSTGRES_PASSWORD` and update `PROJECTMAP_DATABASE_URL` consistently. Changing the Compose environment after initialization does not change an existing database role's password.
 
-The application does not parse `.env` automatically. The commands above explicitly load it. Compose creates the development database and role on first initialization. It keeps data in the `projectmap_postgres_data` named volume.
+Go commands and development checks automatically load `.env` from the current working directory; run these commands from the project root. Existing process environment variables take priority, including explicitly empty values. `.env` fills missing values, then application defaults apply. A missing file is allowed when configuration is supplied externally; an unreadable or malformed file fails with a credential-safe error. Loaded values are available through `os.Getenv`. No shell sourcing is needed. `.env` is ignored by Git; only `.env.example` is committed.
+
+Compose also reads `.env` and creates the development database and role on first initialization. It keeps data in the `projectmap_postgres_data` named volume. Go does not automatically reconcile a changed database URL/password with an existing PostgreSQL role; keep the settings consistent.
 
 ```sh
 make db-status
@@ -42,12 +41,9 @@ createuser --pwprompt projectmap
 createdb --owner=projectmap projectmap
 ```
 
-Choose a password and update `.env` with your native installation's port and credentials (often port 5432, unlike Compose's 15432). Then explicitly load it:
+Choose a password and update `.env` with your native installation's port and credentials (often port 5432, unlike Compose's 15432). Then run:
 
 ```sh
-set -a
-source .env
-set +a
 make migrate
 make bootstrap
 make run
@@ -81,10 +77,12 @@ The executable is `.local/projectmap`. Go build/module caches stay under the ign
 Real database checks are opt-in:
 
 ```sh
-PROJECTMAP_TEST_DATABASE_URL="$PROJECTMAP_DATABASE_URL" make test-db
+make test-db
 ```
 
-The test connection must be allowed to create/drop schemas. Tests use a fresh generated schema and remove only that schema; they do not migrate the database's public schema. They cover migration replay/checksums, bootstrap replay, transaction rollback, consistent read snapshots, read-only enforcement, schema constraints, readiness, and data visibility through a new connection. `make test-db` requires the variable so it cannot silently skip; ordinary `make test` skips database checks when the variable is absent.
+`make test-db` uses `PROJECTMAP_TEST_DATABASE_URL` when set; otherwise it uses the validated `PROJECTMAP_DATABASE_URL` from the environment or `.env`. An explicitly empty test URL is an error. The test connection must be allowed to create/drop schemas. Tests use a fresh generated schema and remove only that schema; they do not migrate the database's public schema. They cover migration replay/checksums, bootstrap replay, transaction rollback, consistent read snapshots, read-only enforcement, schema constraints, readiness, and data visibility through a new connection.
+
+Ordinary `make test` loads `.env` but does not fall back to the development database: database tests run only when a nonempty `PROJECTMAP_TEST_DATABASE_URL` is explicitly configured. Direct `go test` bypasses the development launcher, so supply environment variables yourself when running database tests that way. The launcher executes child commands directly; it never sources `.env` as shell code or prints configuration values.
 
 For the Compose development database, `make verify-local` checks the complete startup/outage/recovery flow. It intentionally stops and recreates this project's database container without deleting its volume, so run it when no other project work needs that database. It creates and removes a uniquely named verification schema, checks that a stored marker and local identities survive container recreation, and checks a Go backend restart. It leaves PostgreSQL running and stops the temporary Go process.
 
