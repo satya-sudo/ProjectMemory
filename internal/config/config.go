@@ -9,7 +9,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-type Config struct{ Addr, DatabaseURL string }
+type Config struct{ Addr, DatabaseURL, CredentialsFile string }
 
 func Load() (Config, error) {
 	if err := LoadEnv(".env"); err != nil {
@@ -30,6 +30,10 @@ func LoadEnv(path string) error {
 
 func load(getenv func(string) string) (Config, error) {
 	c := Config{Addr: getenv("PROJECTMAP_ADDR"), DatabaseURL: getenv("PROJECTMAP_DATABASE_URL")}
+	c.CredentialsFile = getenv("PROJECTMAP_CREDENTIALS_FILE")
+	if c.CredentialsFile == "" {
+		c.CredentialsFile = ".local/credentials.json"
+	}
 	if c.Addr == "" {
 		c.Addr = "127.0.0.1:8080"
 	}

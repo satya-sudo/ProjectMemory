@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"projectmap/internal/access"
 	"projectmap/internal/config"
 	"projectmap/internal/database"
 	"projectmap/internal/httpapi"
+	"projectmap/internal/memory"
 	"syscall"
 	"time"
 )
@@ -24,11 +26,11 @@ func main() {
 }
 func run() error {
 	if len(os.Args) != 2 {
-		return errors.New("usage: projectmap serve|migrate|bootstrap")
+		return errors.New("usage: projectmap serve|migrate|bootstrap|credentials")
 	}
 	command := os.Args[1]
-	if command != "serve" && command != "migrate" && command != "bootstrap" {
-		return errors.New("unknown command: use serve, migrate, or bootstrap")
+	if command != "serve" && command != "migrate" && command != "bootstrap" && command != "credentials" {
+		return errors.New("unknown command: use serve, migrate, bootstrap, or credentials")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -42,7 +44,7 @@ func run() error {
 	}
 	defer store.Close()
 	switch command {
-	case "migrate", "bootstrap":
+	case "migrate", "bootstrap", "credentials":
 		opctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		if command == "migrate" {
@@ -59,9 +61,22 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		if command == "credentials" {
+			if err := access.Provision(cfg.CredentialsFile, []string{identity.DashboardClientID, identity.AgentClientID}); err != nil {
+				return err
+			}
+			fmt.Println("Local credentials created in the configured private credential file. Restart the backend to load them.")
+			return nil
+		}
 		return json.NewEncoder(os.Stdout).Encode(identity)
 	}
-	srv := &http.Server{Addr: cfg.Addr, Handler: httpapi.Handler(store, cfg.Addr), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	credentials, err := access.LoadCredentials(cfg.CredentialsFile)
+	if err != nil {
+		return err
+	}
+	manager := access.New(store, credentials)
+	projects := &memory.Service{Backend: database.NewMemoryStore(store, "http://"+cfg.Addr)}
+	srv := &http.Server{Addr: cfg.Addr, Handler: httpapi.Handler(store, cfg.Addr, httpapi.Options{Access: manager, Memory: projects}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	result := make(chan error, 1)
 	go func() { result <- srv.ListenAndServe() }()
 	slog.Info("local backend starting", "address", cfg.Addr)

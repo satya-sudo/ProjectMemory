@@ -1,6 +1,6 @@
 # HTTP API and MCP contracts — MVP
 
-Status: proposed API design, not implemented. Uses the accepted MVP schema baseline in [database-schema.md](database-schema.md). This document is the contract to implement in Go and expose through the FastMCP adapter.
+Status: Phase 2 API code is implemented with local rules/HTTP tests. New PostgreSQL integration tests are written but not run; live verification remains pending. Uses the accepted MVP schema baseline in [database-schema.md](database-schema.md). The FastMCP adapter will expose this Go HTTP contract.
 
 ## Contract decisions
 
@@ -46,7 +46,9 @@ Proposed MVP access mechanism:
 - The browser supplies a per-session CSRF token on mutations in `X-CSRF-Token`; `GET /api/v1/me` returns that token for authenticated browser sessions only. Validate same origin on session creation as well. Do not put credentials in project documents, URLs, application logs, or browser localStorage.
 - Bearer requests do not need CSRF tokens. Browser-origin requests must still pass the origin policy. Require credentials for domain reads and writes; health/readiness expose no project data or configuration secrets.
 
-Session response: `{ "data": { "authenticated": true } }`; login body: `{ "credential": "..." }`. Wrong credentials return 401; logout returns 204. Session storage, expiry, throttling, and first-run credential delivery must be specified during foundation implementation. These routes do not introduce remote accounts or OAuth.
+Session response: `{ "data": { "authenticated": true } }`; login body: `{ "credential": "..." }`. Wrong credentials return 401; logout returns 204. Sessions are in memory with absolute 12-hour expiry and are lost on restart. They are capped at 1,000 active sessions. Login is limited to 20 attempts per minute across the local instance; excess attempts/capacity return 429 with `Retry-After: 60`. Login JSON is capped at 16 KiB; credential strings at 128 bytes. These routes do not introduce remote accounts or OAuth.
+
+`make credentials` provisions a private version-1 credential JSON file at `.local/credentials.json` (override with `PROJECTMAP_CREDENTIALS_FILE`). It stores dashboard and agent credentials outside domain tables, refuses overwrite, and does not print secrets. The server loads credential digests at startup and resolves client/profile identity and revocation from PostgreSQL on each authenticated request. Missing files leave authentication disabled; invalid/private-permission failures stop startup. This increment's live identity-query/provisioning verification is pending explicit authorization to use the local database.
 
 ## Common representations
 
@@ -63,6 +65,8 @@ Successful single-resource reads use `{ "data": ... }`. Lists use:
 `meta.project_revision` appears on project-scoped reads. List reads use `limit` (default 20, maximum 100) and an opaque `cursor`. Filters are bound into the cursor; changing them requires a fresh listing. Reject invalid/mismatched cursors with 400. Project lists sort by `updated_at DESC, id DESC`; progress/documents use their documented timestamp plus ID; history sorts by revision descending. Decisions, questions, and bindings use `created_at DESC, id DESC`.
 
 Project-scoped pagination is tied to a project revision. A cursor from an older project revision returns 409 `cursor_stale`; restart the listing to avoid mixing versions. The board listing is best-effort across writes; refreshing restarts it. `next_cursor` is null when no further results exist. Empty collections are arrays, not null.
+
+Implemented cursor details: cursors are signed with an in-memory key and bound to the authenticated profile, resource, filters, and page size. Changing page size requires a fresh listing. Backend restarts invalidate cursors (400 `invalid_cursor`). Context coverage additionally returns `limit` and a relative `next_url` carrying the correct filters/page size; this matters for the progress window's page size of 5.
 
 Project representation:
 
@@ -257,7 +261,7 @@ Proposed initial limits, centrally configured and identical for HTTP and MCP:
 | Idempotency key | 1–128 ASCII characters; UUID recommended |
 | Search query | 200 characters |
 
-Malformed JSON, duplicate JSON object keys, unknown properties, invalid UUIDs, and invalid query shapes return 400. Domain validation such as blank text, invalid transitions, missing acceptance evidence, or exceeding a field/operation limit returns 422. Oversized whole bodies return 413; unsupported content types return 415. Enforce all limits server-side.
+Malformed JSON, duplicate JSON object keys, case-aliased/unknown properties, invalid UUIDs, invalid non-nullable field types, and invalid query shapes return 400. Domain validation such as blank text, invalid transitions, missing acceptance evidence, or exceeding a field/operation limit returns 422. Oversized whole bodies return 413; unsupported content types return 415. Printable non-whitespace ASCII idempotency keys are required. All limits are enforced server-side.
 
 ## Retry and conflict rules
 
@@ -293,6 +297,7 @@ Validation details contain `fields: [{path, message}]`, for example `operations[
 | 413 | `request_too_large` |
 | 415 | `unsupported_media_type` |
 | 422 | `validation_failed`, `invalid_transition`, `no_change` |
+| 429 | `rate_limited` |
 | 500 | `internal_error` |
 | 503 | `service_unavailable` |
 
@@ -334,6 +339,6 @@ Add `change_items.metadata jsonb NOT NULL DEFAULT '{}'`, constrained to an objec
 
 ## Implementation contract checks
 
-During implementation, verify create/replay, atomic multi-operation rollback, stale writes, accepted-content reset, archived write rejection, cross-project target rejection, context pagination, cursor staleness, workspace uniqueness, origin/auth/CSRF handling, and ambiguous network outcomes. These are planned checks; no API server or tests have been created yet.
+Local tests cover state rules, validation, cursor signing/staleness rules, authenticated HTTP routing, strict input rejection, CSRF, and replay/conflict response contracts using fake backends. Opt-in PostgreSQL tests cover create/replay, transaction rollback after a constraint failure, concurrent requests, stale writes, context pagination/coverage, coalesced history, literal search, archiving, ownership, and cross-project targets. Those new database tests and the new identity-resolution test have not been run; ambiguous network/commit outcomes still need live verification. Phase 2 remains in progress until the required database-backed checks pass.
 
-Next implementation artifact: a versioned OpenAPI specification and matching typed FastMCP models derived from this reviewed contract. Do not maintain a second competing interpretation of operation shapes.
+Machine-readable API schemas and typed FastMCP models should follow this contract as their respective implementations are added. Do not maintain a second competing interpretation of operation shapes.

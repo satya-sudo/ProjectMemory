@@ -2,7 +2,7 @@
 
 Local project-idea memory for coding agents and an idea board dashboard.
 
-Current implementation: Phase 1 Go backend foundation is complete and verified against PostgreSQL 18.6 in Docker. Project APIs, credentials/sessions, FastMCP, and the React dashboard are not implemented yet.
+Current implementation: Phase 1 foundation is complete. Phase 2 API code now includes local access, project capture/search, document and decision updates, atomic checkpoints, context retrieval, workspace binding, and history. Local rules and HTTP tests pass using fake backend/identity implementations. New PostgreSQL identity/project integration tests are written but have not been run; Phase 2 remains in progress until live verification is explicitly requested and passes. FastMCP and the React dashboard follow in Phases 3 and 4.
 
 ## Local setup with Docker
 
@@ -51,7 +51,29 @@ make run
 
 ## Backend commands
 
-`bootstrap` returns the local profile, dashboard client, and MCP client IDs. It is safe to repeat and does not issue authentication credentials yet. `migrate` is also repeatable and validates checksums of migrations already applied. Migration failures roll back the transaction. The Go commands do not create a database or start PostgreSQL.
+`bootstrap` returns the local profile, dashboard client, and MCP client IDs. It is safe to repeat. `migrate` is also repeatable and validates checksums of migrations already applied. Migration failures roll back the transaction. The Go commands do not create a database or start PostgreSQL.
+
+Once the database is available and migrated, provision credentials explicitly:
+
+```sh
+make credentials
+```
+
+This command reuses/bootstrap-checks the local identities and writes two random credentials to `.local/credentials.json` with file permissions `0600`. The first entry corresponds to the dashboard client and the second to the MCP client; each includes its stable `client_id`. Credentials are not printed. Read/configure them privately from that file and never include them in project memory. `PROJECTMAP_CREDENTIALS_FILE` overrides the path. Provisioning refuses to overwrite an existing file. The default path and any file named `credentials.json` are ignored by Git. Restart the backend after provisioning or replacing the file; it loads credential digests once at startup.
+
+If the credential file is absent, health endpoints remain usable and authenticated endpoints return 401. A malformed file or non-private file prevents server startup. The backend checks that clients still exist and are not revoked in PostgreSQL on every authenticated request. Revoking a client is currently a local administrative database action; public management/rotation APIs are outside this increment.
+
+### Access endpoints
+
+| Route | Behavior |
+| --- | --- |
+| `GET /api/v1/me` | Return the authenticated profile/client; browser sessions also receive their CSRF token |
+| `POST /api/v1/session` | Exchange a dashboard credential for an HttpOnly, SameSite=Strict session cookie |
+| `DELETE /api/v1/session` | Log out a browser session and clear its cookie; requires `X-CSRF-Token` |
+
+Agents send `Authorization: Bearer <credential>` to `/api/v1/me` and future project APIs. Browser login sends JSON `{ "credential": "<dashboard credential>" }` with `Content-Type: application/json` and an `Origin` matching the configured local server origin exactly. Cookies are host-only and scoped to `/api/v1`; the local HTTP server does not set the Secure flag. Do not expose this local-only configuration as a hosted service.
+
+Sessions live in memory, expire after 12 hours, and are invalidated by logout or backend restart. Only dashboard credentials create browser sessions. Login allows 20 attempts per minute across the local instance and at most 1,000 active sessions; excess attempts/capacity return 429 with `Retry-After`. For cookie-authenticated mutations, supply the CSRF token from `/api/v1/me`. Cross-origin requests are rejected, including bearer requests carrying a foreign Origin. An invalid Authorization header never falls back to a cookie. A known credential with an unavailable identity store returns a safe 503, without exposing database errors.
 
 Check the running service using the configured IP and port (the Host header must match that address):
 
@@ -60,17 +82,49 @@ curl -i http://127.0.0.1:8080/healthz
 curl -i http://127.0.0.1:8080/readyz
 ```
 
-The service remains live when PostgreSQL is unavailable; readiness returns 503 until the database is reachable and its schema matches the binary. Migrations run only through the explicit command, not automatically on server startup. Only health/readiness routes exist at this point.
+The service remains live when PostgreSQL is unavailable; readiness returns 503 until the database is reachable and its schema matches the binary. Migrations run only through the explicit command, not automatically on server startup.
+
+## Project-memory API
+
+All domain routes require bearer or browser-session authentication. IDs and ownership come from the authenticated client, not request-supplied profile fields.
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/v1/projects` | Create a project, overview, initial proposed decisions/open questions, and optional workspace binding |
+| `GET /api/v1/projects` | Search title/summary and list active, archived, or all ideas |
+| `GET /api/v1/projects/{id}` | Retrieve project metadata and section counts |
+| `POST /api/v1/projects/{id}/checkpoints` | Atomically change project metadata, documents, decisions, questions, progress, or bindings |
+| `GET /api/v1/projects/{id}/context` | Retrieve a consistent context packet with explicit truncation and continuation information |
+| `GET /api/v1/projects/{id}/documents` | List document metadata; append `/{document_id}` for full content |
+| `GET /api/v1/projects/{id}/decisions` | List/filter decision records |
+| `GET /api/v1/projects/{id}/questions` | List/filter open/resolved/dismissed questions |
+| `GET /api/v1/projects/{id}/progress` | List progress outcomes and evidence |
+| `GET /api/v1/projects/{id}/workspace-bindings` | List the project's associated local directories |
+| `GET /api/v1/workspace-bindings/resolve` | Resolve an exact canonical `workspace_key` |
+| `GET /api/v1/projects/{id}/history` | List checkpoints; append `/{checkpoint_id}` for full before/after snapshots |
+
+Both write endpoints require a caller-generated `Idempotency-Key`. Checkpoints additionally require `expected_revision`, a summary, and 1–50 typed operations. Requests with a reused key and different input return 409; successful retries replay the stored result before checking the now-stale revision. A stale new write returns 409 with the current revision. Cookie-authenticated writes also require `X-CSRF-Token`.
+
+The PostgreSQL backend rechecks the writing client, locks the project revision, and commits current records, one checkpoint, change snapshots, and retry data together. Unknown fields, duplicate/case-aliased JSON properties, unrecognized operation types, noncanonical workspace paths, and cross-project target IDs are rejected. Editing accepted content resets its acceptance state; explicitly accepting a document or decision requires a user-agreement reference. Verified progress requires evidence, and changing an outcome without replacement evidence resets it to reported.
+
+Archive/unarchive and workspace binding are checkpoint operations, not independent write endpoints. Archived projects remain readable but require a standalone unarchive checkpoint before editing. Hard deletion and restoration are deferred. No schema migration beyond the existing initial schema is required for these endpoints.
+
+Project-scoped list cursors are signed and bound to the profile, filters, page size, and project revision; changed projects return `cursor_stale`. Backend restarts invalidate cursors, so start a fresh listing. Context coverage includes totals, returned counts, page size, `next_cursor`, and a relative `next_url` with the correct filters/page size. Follow all accepted-decision pages before treating the set as complete. Context retrieval uses deterministic database reads and no remote model.
+
+See [API examples](docs/phase-2-api-examples.md), [the detailed contract](docs/api-design.md), and [verification status](docs/phase-2-test-report.md).
 
 `PROJECTMAP_ADDR` defaults to `127.0.0.1:8080` and accepts loopback IPs only. `PROJECTMAP_DATABASE_URL` is required. Database configuration and errors are not printed with connection credentials. Stop the backend with Ctrl-C. Manage PostgreSQL separately through Compose or its native installation.
 
 ## Development checks
 
 ```sh
-make test
+GOCACHE="$PWD/.cache/go-build" GOMODCACHE="$PWD/.cache/go-mod" \
+go test -race ./internal/access ./internal/memory ./internal/jsonutil ./internal/httpapi ./internal/config ./cmd/...
 make vet
 make build
 ```
+
+This targeted test command does not access a database. Docker commands and Docker-backed checks require an explicit user request; do not infer that permission from a general implementation/testing request. `make test` remains available for the entire suite, but it may run integration tests if `PROJECTMAP_TEST_DATABASE_URL` is configured.
 
 The executable is `.local/projectmap`. Go build/module caches stay under the ignored `.cache` directory. Initial dependency downloads require a network connection; ordinary local runtime does not require network access beyond the local database.
 
@@ -80,7 +134,7 @@ Real database checks are opt-in:
 make test-db
 ```
 
-`make test-db` uses `PROJECTMAP_TEST_DATABASE_URL` when set; otherwise it uses the validated `PROJECTMAP_DATABASE_URL` from the environment or `.env`. An explicitly empty test URL is an error. The test connection must be allowed to create/drop schemas. Tests use a fresh generated schema and remove only that schema; they do not migrate the database's public schema. They cover migration replay/checksums, bootstrap replay, transaction rollback, consistent read snapshots, read-only enforcement, schema constraints, readiness, and data visibility through a new connection.
+`make test-db` uses `PROJECTMAP_TEST_DATABASE_URL` when set; otherwise it uses the validated `PROJECTMAP_DATABASE_URL` from the environment or `.env`. An explicitly empty test URL is an error. The test connection must be allowed to create/drop schemas. Tests use a fresh generated schema and remove only that schema; they do not migrate the database's public schema. They cover foundation behavior plus the new opt-in identity and project-memory suites: create/replay, checkpoints, rollback, ownership, context pagination, coalesced audit entries, archive/unarchive, literal search, concurrent retries, and revision conflicts. The new Phase 2 database suites have not yet been executed. Run Docker-backed checks only when explicitly requested.
 
 Ordinary `make test` loads `.env` but does not fall back to the development database: database tests run only when a nonempty `PROJECTMAP_TEST_DATABASE_URL` is explicitly configured. Direct `go test` bypasses the development launcher, so supply environment variables yourself when running database tests that way. The launcher executes child commands directly; it never sources `.env` as shell code or prints configuration values.
 

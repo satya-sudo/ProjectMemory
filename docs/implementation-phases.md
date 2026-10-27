@@ -10,7 +10,7 @@ Status values: not started, in progress, blocked, complete. Mark a phase complet
 | --- | --- | --- | --- |
 | 0 — Product and contracts | Reviewed flows, schema, and API/tool contracts | — | In progress |
 | 1 — Local foundation and storage | Go backend and durable local PostgreSQL | 0 | Complete |
-| 2 — Project memory API | Capture, retrieve, update, and resume through Go | 1 | Not started |
+| 2 — Project memory API | Capture, retrieve, update, and resume through Go | 1 | In progress |
 | 3 — Agent integration | FastMCP capture/resume loop in a coding agent | 2 | Not started |
 | 4 — Idea board | React board and editable project workspace | 2; release validation also needs 3 | Not started |
 | 5 — Local MVP release | Reliable offline operation, installation, and recovery | 3, 4 | Not started |
@@ -42,11 +42,17 @@ Exit: a clean database migrates successfully; restarting preserves sample data; 
 
 ## Phase 2 — Project memory API
 
-- [ ] Implement project creation, listing/search, detail, metadata updates, and archiving.
-- [ ] Implement document, decision, question, and progress operations.
-- [ ] Implement workspace bindings and compact context retrieval.
-- [ ] Implement atomic checkpoint writes, revision conflicts, provenance, and idempotency.
-- [ ] Implement history retrieval and local access controls.
+- [x] Implement Phase 2.1 local credential provisioning, bearer authentication, browser session login/logout, CSRF, origin checks, throttling, and `/api/v1/me` with local tests.
+- [ ] Verify new identity resolution and credential provisioning against PostgreSQL when explicitly authorized. The opt-in isolated-schema test is written but has not been run.
+- [x] Implement project creation, listing/search, detail, metadata updates, and archiving (SQL live verification pending).
+- [x] Implement document, decision, question, and progress operations with database-independent validation/state-rule tests.
+- [x] Implement workspace bindings and compact context retrieval with signed revision-bound continuation cursors (SQL live verification pending).
+- [x] Implement atomic checkpoint writes, revision conflicts, provenance, and idempotency (SQL live verification pending).
+- [x] Implement history retrieval and project ownership enforcement in domain operations (SQL live verification pending).
+- [x] Add authenticated HTTP routing, strict JSON/query validation, replay headers, CSRF checks, safe errors, and local tests with fake backends.
+- [ ] Run the new opt-in PostgreSQL identity and memory integration tests when explicitly authorized; verify rollback/replay/concurrency/context/history against the real database.
+
+Build order: 2.1 local access → 2.2 project capture → 2.3 atomic memory updates → 2.4 resume/context → 2.5 API reliability verification. Phase 2 is not complete until the project-memory walkthrough and required checks pass.
 
 Exit: API-only walkthrough captures an idea, adds plans, records a decision, and resumes correct context. Concurrent writes cannot silently overwrite each other; retries cannot duplicate writes; failed transactions leave no partial history.
 
@@ -88,10 +94,11 @@ Exit: a clean setup can capture an idea, refine it, edit through the dashboard, 
 - Verification on 2026-10-25: race-enabled unit tests, Go vet, and binary build pass.
 - Live PostgreSQL 18.6 integration tests passed: migration/bootstrap replay, checksum rejection, transaction rollback, repeatable-read consistency, read-only enforcement, required-state constraints, overview uniqueness, and data visibility through new connections. Run with `PROJECTMAP_TEST_DATABASE_URL` and `make test-db`.
 - `make verify-local` passed: health 200 and readiness 200 with PostgreSQL available; health 200/readiness 503 during a database outage; readiness recovered to 200 after container recreation. Stored marker data and bootstrap IDs survived the preserved Docker volume, and a new Go backend process read the same data.
-- Docker database is healthy on `127.0.0.1:15432` with named volume `projectmap_postgres_data`. Final read-only checks found one profile, two clients, and no leftover test/verification schemas. The temporary Go verification process was stopped; PostgreSQL remains running.
+- Historical Phase 1 verification found a healthy Docker database on `127.0.0.1:15432`, named volume `projectmap_postgres_data`, one profile, two clients, and no leftover verification schemas. This describes the Phase 1 check, not a current Docker-state inspection.
 - Phase 1 is complete. Docker Desktop's bundled CLI and credential-helper path are supported in Makefile commands. No native PostgreSQL installation was needed.
 - Additional pre-Phase-2 testing: 30 named tests/subtests passed with race detection, including concurrent setup, interrupted transaction rollback, failed migration cleanup, revoked-client replacement, schema integrity edges, and HTTP readiness timeouts. Details and coverage are in [Phase 1 test report](phase-1-test-report.md).
 - Configuration follow-up: Go runtime and development commands automatically load optional `.env` through godotenv, preserving existing variables (including explicit empty values). Seven dotenv tests verify precedence, required settings, missing/malformed/unreadable files, `os.Getenv` availability, and credential-safe errors. Local `.env` stays Git-ignored; no schema changes are needed.
-- API/agent/dashboard features remain unimplemented. FastMCP transport and frontend tooling choices remain open for their respective phases.
+- Phase 2 API implementation is in place, including access controls, project capture, checkpoint operations, context, workspace binding, and history. Local rule/HTTP tests run without a database. New PostgreSQL integration tests are opt-in and remain unexecuted, so Phase 2 is not marked complete. No Docker commands or live database checks were run during this implementation. See [Phase 2 test report](phase-2-test-report.md). FastMCP and dashboard features remain future phases.
+- Phase 2 local verification: 104 named tests/subtests passed with race detection, plus 3 static database-package tests. Vet, build, and whitespace checks passed. Integration tests were compiled only, not executed.
 
 Deferred: automatic idea capture, hosted/hybrid deployments, multi-user collaboration, cloud synchronization, vector search, and a task dependency engine.

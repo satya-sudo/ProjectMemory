@@ -3,13 +3,15 @@ export GOMODCACHE := $(CURDIR)/.cache/go-mod
 export PATH := /Applications/Docker.app/Contents/Resources/bin:$(PATH)
 DOCKER ?= $(shell command -v docker 2>/dev/null || printf '%s' /Applications/Docker.app/Contents/Resources/bin/docker)
 
-.PHONY: run migrate bootstrap test test-db verify-local vet build db-up db-stop db-restart db-status
+.PHONY: run migrate bootstrap credentials test test-db verify-local vet build db-up db-stop db-restart db-status
 run:
 	go run ./cmd/projectmap serve
 migrate:
 	go run ./cmd/projectmap migrate
 bootstrap:
 	go run ./cmd/projectmap bootstrap
+credentials:
+	go run ./cmd/projectmap credentials
 test:
 	go run ./cmd/dev test
 test-db:
